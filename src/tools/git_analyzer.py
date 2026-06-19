@@ -5,6 +5,7 @@ Reads staged, unstaged, and untracked changes in a git repository and returns a 
 formatted as a prompt for Claude to review before commit.
 """
 from pathlib import Path
+from typing import Any
 from git import Repo, InvalidGitRepositoryError, NoSuchPathError  # type: ignore[import]
 
 
@@ -23,7 +24,7 @@ def analyze_git_diff(repo_path: str = ".", review_focus: str = "general") -> str
     path = Path(repo_path).expanduser().resolve()
 
     try:
-        repo = Repo(path, search_parent_directories=True)  # type: ignore[assignment]
+        repo: Any = Repo(path, search_parent_directories=True)  # type: ignore[assignment]
     except NoSuchPathError:
         return f"The provided path '{repo_path}' does not exist."
     except InvalidGitRepositoryError:
