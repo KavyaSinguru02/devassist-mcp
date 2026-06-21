@@ -1,0 +1,19 @@
+{
+  "created_on": "2026-06-21T21:31:30.676639",
+  "visitors": [
+    {
+      "email": "ksinguru@gmail.com",
+      "session_id": "1782070232.110788",
+      "first_seen": "2026-06-21T21:31:30.717730",
+      "last_seen": "2026-06-21T21:31:30.717730",
+      "visits": 1
+    },
+    {
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "first_seen": "2026-06-21T22:00:03.779628",
+      "last_seen": "2026-06-21T22:00:03.779628",
+      "visits": 1
+    }
+  ]
+}

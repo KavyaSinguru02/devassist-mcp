@@ -26,6 +26,10 @@ from mcp.types import Tool, TextContent  # type: ignore[import]
 
 # Import our tool functions
 from tools.code_explainer import explain_code
+from tools.architecture_diagram import (
+    generate_architecture_diagram,
+    generate_architecture_from_github_url,
+)
 from tools.test_generator import generate_tests
 from tools.git_analyzer import analyze_git_diff
 from tools.todo_finder import find_todos
@@ -51,8 +55,8 @@ async def list_tools() -> List[Any]:
         Tool(
             name="explain_code",
             description=(
-                "Read a code file and prepare a detailed explanation in any "
-                "human language. Supports many languages."
+                "Explain a code file with overview by default, or line-by-line "
+                "when requested. Supports many human languages."
             ),
             inputSchema={
                 "type": "object",
@@ -65,6 +69,12 @@ async def list_tools() -> List[Any]:
                         "type": "string",
                         "description": "Human language (e.g., 'English')",
                         "default": "English",
+                    },
+                    "detail_level": {
+                        "type": "string",
+                        "description": "Explanation depth",
+                        "default": "overview",
+                        "enum": ["overview", "line-by-line"],
                     },
                 },
                 "required": ["file_path"],
@@ -181,6 +191,39 @@ async def list_tools() -> List[Any]:
                 },
             },
         ),
+
+        Tool(
+            name="architecture_diagram",
+            description=(
+                "Generate a Mermaid architecture diagram from a local repository path "
+                "or from a public GitHub repository URL."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Local repository path",
+                        "default": ".",
+                    },
+                    "github_url": {
+                        "type": "string",
+                        "description": "Public GitHub repository URL",
+                    },
+                    "max_dirs": {
+                        "type": "integer",
+                        "description": "Maximum top-level entries to include",
+                        "default": 20,
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "Diagram depth",
+                        "default": "overview",
+                        "enum": ["overview", "detailed"],
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -194,6 +237,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[Any]:
             result = explain_code(
                 file_path=arguments["file_path"],
                 language=arguments.get("language", "English"),
+                detail_level=arguments.get("detail_level", "overview"),
             )
         elif name == "generate_tests":
             result = generate_tests(
@@ -217,6 +261,22 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[Any]:
                 style=arguments.get("style", "conventional"),
                 include_body=arguments.get("include_body", True),
             )
+        elif name == "architecture_diagram":
+            github_url = arguments.get("github_url")
+            max_dirs = int(arguments.get("max_dirs", 20))
+            mode = arguments.get("mode", "overview")
+            if github_url:
+                result = generate_architecture_from_github_url(
+                    github_url=github_url,
+                    max_dirs=max_dirs,
+                    mode=mode,
+                )
+            else:
+                result = generate_architecture_diagram(
+                    repo_path=arguments.get("repo_path", "."),
+                    max_dirs=max_dirs,
+                    mode=mode,
+                )
         else:
             result = f"Unknown tool: {name}"
             logger.warning(f"Unknown tool requested: {name}")
@@ -236,7 +296,7 @@ async def main():
     """Run the MCP server using stdio transport."""
     logger.info("DevAssist MCP Server starting...")
     logger.info("Transport: stdio")
-    logger.info("Tools registered: 5")
+    logger.info("Tools registered: 6")
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(  # type: ignore[attr-defined]

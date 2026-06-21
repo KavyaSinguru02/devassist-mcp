@@ -49,10 +49,29 @@ SUPPORTED_FRAMEWORKS = {
     },
 }
 
+# Supported explanation languages for test comments and documentation
+SUPPORTED_LANGUAGES = {
+    "English": "en",
+    "Hindi": "hi",
+    "Telugu": "te",
+    "Tamil": "ta",
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Mandarin": "zh",
+    "Japanese": "ja",
+    "Korean": "ko",
+    "Arabic": "ar",
+    "Portuguese": "pt",
+    "Russian": "ru",
+    "Italian": "it",
+}
+
 def generate_tests(
         file_path: str, 
         framework: str="pytest",
-        coverage_level: str="thorough"
+        coverage_level: str="thorough",
+        explanation_language: str="English"
         ) -> str:
     """
     Read a code file and prepare a test-generation prompt for claude.
@@ -60,10 +79,11 @@ def generate_tests(
     Args:
         file_path (str): The path to the code file for which tests are to be generated.
         framework (str): The testing framework to use for generating tests. Defaults to "pytest".
-        coverage_level (str): The level of test coverage desired. Options are "basic" or "thorough". Defaults to "thorough".
+        coverage_level (str): The level of test coverage desired. Options are "basic", "thorough", or "exhaustive". Defaults to "thorough".
+        explanation_language (str): The language for test comments and documentation. Supports 14+ languages. Defaults to "English".
 
         Returns:
-        Formatted prompt with code +test generation instructions for the specified framework and coverage level.
+        Formatted prompt with code + test generation instructions for the specified framework and coverage level.
     """
 
     #convert to path object and resolve to absolute path
@@ -94,6 +114,12 @@ def generate_tests(
     valid_coverage_levels = ["basic", "thorough","exhaustive"]
     if coverage_level not in valid_coverage_levels:
         return f"Invalid coverage level '{coverage_level}'. Valid options are: {', '.join(valid_coverage_levels)}."
+    
+    #validate explanation language
+    explanation_language = explanation_language.strip()
+    if explanation_language not in SUPPORTED_LANGUAGES:
+        supported = ", ".join(SUPPORTED_LANGUAGES.keys())
+        return f"Unsupported language '{explanation_language}'. Supported languages are: {supported}."
     
     #read the file
     try:
@@ -129,7 +155,7 @@ def generate_tests(
         "exhaustive": "Generate exhaustive unit tests covering all possible scenarios, edge cases, and error handling.Aim for 95+% coverage with 3-5 tests per function.",
     }
   
-    #Build the prompt for test generation
+    # Build a concise, copy-paste-friendly prompt for test generation.
     return f""" Generate unit tests for the following code file using the {framework} framework.
 Source File: {path.name}
 Path: {path}
@@ -143,28 +169,18 @@ framework:{framework}({framework_info["language"]}) - {framework_info["naming"]}
 ---SOURCE CODE---
 {content}
 ---END OF SOURCE CODE---
-Instructions:
-{coverage_instructions_map[coverage_level]}
+Output requirements (keep it concise and practical):
+- Return one complete runnable test file first.
+- Then include a short coverage summary.
+- Then include only essential setup/run commands.
 
-###Requirements
+Guidance:
+- Coverage target: {coverage_instructions_map[coverage_level]}
+- Comment/docstring language: {explanation_language}
+- Naming convention: {framework_info["naming"]}
+- Style convention: {framework_info["style"]}
 
-1.Use the {framework} framework conventions for naming, structure, and style.
-2.Test file naming: {framework_info["naming"]}.
-3.Use descriptive test names and docstrings to explain the purpose of each test.
-4.Include docstrings for each test function/method to explain what is being tested and the expected outcome.
-5.Cover Error handling and edge cases where applicable.
-6.Mock external dependencies or services to isolate the unit under test.
-7.Group related tests using fixtures, setup/teardown methods, or describe blocks as appropriate for the framework.
-
-
-### Output Format
-1.**Test File**: complete ,runnable code(use '''{code_language} ... ''' for code blocks) for the test file with all necessary imports, fixtures, and test cases.
-2.**Test Coverage Summary**: A brief summary of the test coverage achieved, including the number of tests generated and any notable edge cases covered.
-3.**Setup Instructions**: Any additional setup or configuration instructions needed to run the tests, if applicable.
-4.**Notes**: Any additional notes or considerations for the generated tests, such as limitations or areas for further testing.
-5.**Optional**: If applicable, provide a brief explanation of how to run the tests and interpret the results.
-
-Make the test production quality,readable, maintainable, and follow best practices for the specified testing framework. Avoid generating placeholder or incomplete tests; ensure that each test is meaningful and contributes to the overall test coverage of the code file.
+Do not generate placeholders or TODO-only tests.
 """
 #Test :run this file directly to test it
 if __name__ == "__main__":

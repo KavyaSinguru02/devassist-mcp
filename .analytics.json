@@ -1,0 +1,51 @@
+{
+  "service_usage": {
+    "Explain Code": 4,
+    "Architecture Diagram": 2,
+    "Generate Tests": 1
+  },
+  "page_views": [
+    {
+      "tool": "Explain Code",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:00:39.910636"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:00:48.154681"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:02:22.029276"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:04:36.954518"
+    },
+    {
+      "tool": "Architecture Diagram",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:14:34.918423"
+    },
+    {
+      "tool": "Generate Tests",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:16:10.624822"
+    },
+    {
+      "tool": "Architecture Diagram",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782071818.368946",
+      "timestamp": "2026-06-21T22:21:33.036534"
+    }
+  ]
+}
