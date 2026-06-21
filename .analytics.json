@@ -1,7 +1,7 @@
 {
   "service_usage": {
-    "Explain Code": 4,
-    "Architecture Diagram": 2,
+    "Explain Code": 13,
+    "Architecture Diagram": 4,
     "Generate Tests": 1
   },
   "page_views": [
@@ -46,6 +46,72 @@
       "email": "a.chaitu28@gmail.com",
       "session_id": "1782071818.368946",
       "timestamp": "2026-06-21T22:21:33.036534"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "ksinguru@gmail.com",
+      "session_id": "1782075070.485336",
+      "timestamp": "2026-06-21T22:54:53.582075"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasinguru@gmail.com",
+      "session_id": "1782075806.650721",
+      "timestamp": "2026-06-21T23:06:20.910740"
+    },
+    {
+      "tool": "Architecture Diagram",
+      "email": "kavyasinguru@gmail.com",
+      "session_id": "1782075806.650721",
+      "timestamp": "2026-06-21T23:13:40.837918"
+    },
+    {
+      "tool": "Architecture Diagram",
+      "email": "kavyasinguru@gmail.com",
+      "session_id": "1782075806.650721",
+      "timestamp": "2026-06-21T23:14:09.448953"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "a.chaitu28@gmail.com",
+      "session_id": "1782078555.02551",
+      "timestamp": "2026-06-21T23:50:09.716587"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:09:29.641889"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:10:50.483248"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:11:59.916701"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:12:53.719949"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:13:37.980060"
+    },
+    {
+      "tool": "Explain Code",
+      "email": "kavyasdiary28@gmail.com",
+      "session_id": "1782079440.386499",
+      "timestamp": "2026-06-22T00:14:12.968000"
     }
   ]
 }

@@ -26,14 +26,11 @@ from mcp.types import Tool, TextContent  # type: ignore[import]
 
 # Import our tool functions
 from tools.code_explainer import explain_code
-from tools.architecture_diagram import (
-    generate_architecture_diagram,
-    generate_architecture_from_github_url,
-)
 from tools.test_generator import generate_tests
 from tools.git_analyzer import analyze_git_diff
 from tools.todo_finder import find_todos
 from tools.commit_helper import suggest_commit_message
+from tools.error_diagnoser import diagnose_error
 
 # CRITICAL: Logging MUST go to stderr, NEVER stdout!
 logging.basicConfig(
@@ -193,37 +190,28 @@ async def list_tools() -> List[Any]:
         ),
 
         Tool(
-            name="architecture_diagram",
+            name="diagnose_error",
             description=(
-                "Generate a Mermaid architecture diagram from a local repository path "
-                "or from a public GitHub repository URL."
+                "Analyze traceback/log text and report likely root cause, where to check, "
+                "and quick verification steps."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "error_text": {
+                        "type": "string",
+                        "description": "Full traceback or error log text",
+                    },
                     "repo_path": {
                         "type": "string",
-                        "description": "Local repository path",
+                        "description": "Repository path context",
                         "default": ".",
                     },
-                    "github_url": {
-                        "type": "string",
-                        "description": "Public GitHub repository URL",
-                    },
-                    "max_dirs": {
-                        "type": "integer",
-                        "description": "Maximum top-level entries to include",
-                        "default": 20,
-                    },
-                    "mode": {
-                        "type": "string",
-                        "description": "Diagram depth",
-                        "default": "overview",
-                        "enum": ["overview", "detailed"],
-                    },
                 },
+                "required": ["error_text"],
             },
         ),
+
     ]
 
 
@@ -261,22 +249,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[Any]:
                 style=arguments.get("style", "conventional"),
                 include_body=arguments.get("include_body", True),
             )
-        elif name == "architecture_diagram":
-            github_url = arguments.get("github_url")
-            max_dirs = int(arguments.get("max_dirs", 20))
-            mode = arguments.get("mode", "overview")
-            if github_url:
-                result = generate_architecture_from_github_url(
-                    github_url=github_url,
-                    max_dirs=max_dirs,
-                    mode=mode,
-                )
-            else:
-                result = generate_architecture_diagram(
-                    repo_path=arguments.get("repo_path", "."),
-                    max_dirs=max_dirs,
-                    mode=mode,
-                )
+        elif name == "diagnose_error":
+            result = diagnose_error(
+                error_text=arguments["error_text"],
+                repo_path=arguments.get("repo_path", "."),
+            )
         else:
             result = f"Unknown tool: {name}"
             logger.warning(f"Unknown tool requested: {name}")

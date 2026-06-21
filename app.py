@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import json
+import smtplib
 import sys
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
+import dns.resolver
 from email_validator import EmailNotValidError, validate_email
 
 # Add src to path so we can import tools directly.
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from tools.architecture_diagram import generate_architecture_diagram
 from tools.code_explainer import explain_code, explain_repo
 from tools.commit_helper import suggest_commit_message
+from tools.error_diagnoser import diagnose_error
 from tools.git_analyzer import analyze_git_diff
 from tools.test_generator import SUPPORTED_FRAMEWORKS, generate_tests
 from tools.todo_finder import find_todos
@@ -143,13 +147,117 @@ def _save_json(name: str, data: dict) -> None:
         pass
 
 
+DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com",
+    "10minutemail.com",
+    "guerrillamail.com",
+    "temp-mail.org",
+    "yopmail.com",
+    "sharklasers.com",
+    "dispostable.com",
+    "throwawaymail.com",
+}
+
+ROLE_LOCALPARTS = {
+    "admin",
+    "support",
+    "help",
+    "info",
+    "contact",
+    "noreply",
+    "no-reply",
+    "test",
+    "testing",
+    "demo",
+}
+
+# Major providers often block RCPT probing, making mailbox checks indeterminate.
+SMTP_INDETERMINATE_OK_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "yahoo.com",
+    "icloud.com",
+    "me.com",
+    "aol.com",
+}
+
+SMTP_TIMEOUT_SECONDS = 3
+
+
+@lru_cache(maxsize=512)
+def _mx_records(domain: str) -> list[str]:
+    try:
+        answers = dns.resolver.resolve(domain, "MX")
+    except Exception:
+        return []
+    records: list[tuple[int, str]] = []
+    for r in answers:
+        try:
+            records.append((int(r.preference), str(r.exchange).rstrip(".")))
+        except Exception:
+            continue
+    records.sort(key=lambda x: x[0])
+    return [host for _, host in records]
+
+
+def _smtp_mailbox_probe(email: str, mx_hosts: list[str]) -> tuple[Optional[bool], str]:
+    """Try RCPT TO probe. Returns True/False/None (indeterminate)."""
+    for host in mx_hosts[:2]:
+        try:
+            with smtplib.SMTP(host, 25, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
+                smtp.ehlo_or_helo_if_needed()
+                smtp.mail("<>")
+                code, msg = smtp.rcpt(email)
+                text = (msg.decode(errors="ignore") if isinstance(msg, bytes) else str(msg)).strip()
+                if code in (250, 251):
+                    return True, f"Mailbox accepted by {host}"
+                if code in (550, 551, 553):
+                    return False, f"Mailbox rejected by {host}: {text}"
+                return None, f"Mailbox could not be verified via {host}: {code} {text}"
+        except Exception:
+            continue
+    return None, "Mailbox verification server did not allow probe"
+
+
 def validate_real_email(raw_email: str) -> tuple[bool, str]:
-    """Validate email syntax and DNS deliverability to block obvious dummy addresses."""
+    """Validate email syntax, domain quality, and mailbox plausibility."""
     try:
         validated = validate_email(raw_email, check_deliverability=True)
-        return True, validated.normalized
+        normalized = validated.normalized
+        local, _, domain = normalized.partition("@")
+        local_l = local.lower()
+        domain_l = domain.lower()
+
+        if domain_l in DISPOSABLE_EMAIL_DOMAINS:
+            return False, "Disposable email domains are not allowed."
+
+        if local_l in ROLE_LOCALPARTS:
+            return False, "Role-based email addresses are not allowed. Use your personal mailbox."
+
+        mx_hosts = _mx_records(domain_l)
+        if not mx_hosts:
+            return False, "Domain has no reachable MX records."
+
+        # Strict mode: accept only when mailbox probe is explicitly accepted.
+        probe_ok, probe_msg = _smtp_mailbox_probe(normalized, mx_hosts)
+        if probe_ok is False:
+            return False, f"Mailbox could not be validated: {probe_msg}"
+        if probe_ok is None:
+            if domain_l in SMTP_INDETERMINATE_OK_DOMAINS:
+                return True, normalized
+            return False, f"Mailbox could not be verified: {probe_msg}"
+
+        return True, normalized
     except EmailNotValidError as exc:
         return False, str(exc)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_repo_info(url: str) -> dict:
+    return get_repo_info(url)
 
 
 # -------------------------
@@ -291,7 +399,7 @@ def render_source_selector(tool_key: str, allow_file_path: bool = True):
     )
 
     if value:
-        info = get_repo_info(value)
+        info = _cached_repo_info(value)
         if info.get("valid"):
             st.info(f"Repository: {info['display_name']}")
 
@@ -303,7 +411,7 @@ def render_branding_bottom() -> None:
         """
 <div class="simple-footer">
     <h3 style="margin:0; color:#111111;">Dev Assist</h3>
-    <p class="small-subtitle" style="margin-top:0.25rem;">Developer-focused tools for explanation, testing, review, and architecture.</p>
+    <p class="small-subtitle" style="margin-top:0.25rem;">Developer-focused tools for explanation, testing, review, and debugging.</p>
     <div class="social-row">
         <a class="social-pill" href="https://github.com/KavyaSinguru02/devassist-mcp" target="_blank">
             <img src="https://cdn.simpleicons.org/github/111111" alt="GitHub" />
@@ -350,7 +458,8 @@ if not st.session_state.subscribed:
     if submit:
         is_valid_email, email_result = validate_real_email(email.strip())
         if not is_valid_email:
-            st.error(f"Enter a real, reachable email address. {email_result}")
+            st.error("Enter valid email address.")
+            st.caption(email_result)
         else:
             _, state = add_or_update_visitor(email_result, st.session_state.session_id)
             st.session_state.user_email = email_result
@@ -377,9 +486,9 @@ pages = [
     "Explain Code",
     "Generate Tests",
     "Analyze Git Diff",
+    "Diagnose Error",
     "Find TODOs",
     "Suggest Commit",
-    "Architecture Diagram",
     "Stats",
 ]
 
@@ -413,9 +522,9 @@ if selected == "Home":
     <div class="tool-item"><b>Explain Code</b><br/>Line-by-line explanation in your language.</div>
     <div class="tool-item"><b>Generate Tests</b><br/>Framework-specific test prompt with coverage options.</div>
     <div class="tool-item"><b>Analyze Git Diff</b><br/>Review uncommitted changes by focus area.</div>
+    <div class="tool-item"><b>Diagnose Error</b><br/>Paste traceback and get root cause + where to check.</div>
     <div class="tool-item"><b>Find TODOs</b><br/>Scan technical debt markers across repo files.</div>
     <div class="tool-item"><b>Suggest Commit</b><br/>Generate clean conventional commit messages.</div>
-    <div class="tool-item"><b>Architecture Diagram</b><br/>Mermaid diagram for local or GitHub repositories.</div>
 </div>
 """,
             unsafe_allow_html=True,
@@ -478,10 +587,11 @@ elif selected == "Explain Code":
             if not source_value:
                 st.error("Please provide a valid path.")
             else:
-                if scope == "Entire Repository":
-                    result = explain_repo(source_value, language, detail_level=detail_level)
-                else:
-                    result = explain_code(source_value, language, detail_level=detail_level)
+                with st.spinner("Analyzing..."):
+                    if scope == "Entire Repository":
+                        result = explain_repo(source_value, language, detail_level=detail_level)
+                    else:
+                        result = explain_code(source_value, language, detail_level=detail_level)
         else:
             if not source_value:
                 st.error("Please enter a GitHub URL.")
@@ -520,21 +630,22 @@ elif selected == "Generate Tests":
 
     if st.button("Generate Tests", type="primary"):
         result = ""
-        if source_type == "local":
-            result = generate_tests(source_value, framework, coverage) if source_value else "Please provide a file path."
-        else:
-            if not source_value or not relative_path:
-                result = "Please provide both GitHub URL and file path."
+        with st.spinner("Generating tests..."):
+            if source_type == "local":
+                result = generate_tests(source_value, framework, coverage) if source_value else "Please provide a file path."
             else:
-                valid, err = validate_github_url(source_value)
-                if not valid:
-                    result = err
+                if not source_value or not relative_path:
+                    result = "Please provide both GitHub URL and file path."
                 else:
-                    try:
-                        with clone_temp_repo(source_value) as repo_path:
-                            result = generate_tests(str(repo_path / relative_path), framework, coverage)
-                    except (RuntimeError, ValueError, TimeoutError) as ex:
-                        result = str(ex)
+                    valid, err = validate_github_url(source_value)
+                    if not valid:
+                        result = err
+                    else:
+                        try:
+                            with clone_temp_repo(source_value) as repo_path:
+                                result = generate_tests(str(repo_path / relative_path), framework, coverage)
+                        except (RuntimeError, ValueError, TimeoutError) as ex:
+                            result = str(ex)
 
         if result.startswith("Please") or result.startswith("Unsupported") or result.startswith("Invalid"):
             st.error(result)
@@ -550,10 +661,33 @@ elif selected == "Analyze Git Diff":
     focus = st.radio("Focus", ["general", "security", "performance", "style", "bugs"], horizontal=True)
 
     if st.button("Analyze Changes", type="primary"):
-        result = analyze_git_diff(repo_path, focus)
+        with st.spinner("Reviewing changes..."):
+            result = analyze_git_diff(repo_path, focus)
         st.code(result, language="markdown")
         record_service_use("Analyze Git Diff", st.session_state.user_email, st.session_state.session_id)
         render_feedback("Analyze Git Diff")
+
+elif selected == "Diagnose Error":
+    st.subheader("Diagnose Error")
+    st.caption("Paste traceback/log text. This tool points to likely root cause and exact files/lines to inspect.")
+
+    error_text = st.text_area(
+        "Error / Traceback",
+        height=260,
+        placeholder="Paste full traceback here...",
+    )
+    repo_path = st.text_input("Repository path (optional)", value=".")
+
+    if st.button("Diagnose", type="primary"):
+        if not error_text.strip():
+            st.error("Please paste traceback or log text.")
+        else:
+            with st.spinner("Diagnosing error..."):
+                result = diagnose_error(error_text=error_text, repo_path=repo_path or ".")
+            st.success("Diagnosis ready.")
+            st.code(result, language="markdown")
+            record_service_use("Diagnose Error", st.session_state.user_email, st.session_state.session_id)
+            render_feedback("Diagnose Error")
 
 elif selected == "Find TODOs":
     st.subheader("Find TODOs")
@@ -569,18 +703,19 @@ elif selected == "Find TODOs":
             st.error("Select at least one pattern.")
         else:
             result = ""
-            if source_type == "local":
-                result = find_todos(source_value or ".", patterns)
-            else:
-                valid, err = validate_github_url(source_value)
-                if not valid:
-                    result = err
+            with st.spinner("Scanning repository..."):
+                if source_type == "local":
+                    result = find_todos(source_value or ".", patterns)
                 else:
-                    try:
-                        with clone_temp_repo(source_value) as repo_path:
-                            result = find_todos(str(repo_path), patterns)
-                    except (RuntimeError, ValueError, TimeoutError) as ex:
-                        result = str(ex)
+                    valid, err = validate_github_url(source_value)
+                    if not valid:
+                        result = err
+                    else:
+                        try:
+                            with clone_temp_repo(source_value) as repo_path:
+                                result = find_todos(str(repo_path), patterns)
+                        except (RuntimeError, ValueError, TimeoutError) as ex:
+                            result = str(ex)
             st.code(result, language="markdown")
             record_service_use("Find TODOs", st.session_state.user_email, st.session_state.session_id)
             render_feedback("Find TODOs")
@@ -592,48 +727,11 @@ elif selected == "Suggest Commit":
     include_body = st.checkbox("Include body", value=True)
 
     if st.button("Suggest Commit Message", type="primary"):
-        result = suggest_commit_message(repo_path, style, include_body)
+        with st.spinner("Preparing commit suggestions..."):
+            result = suggest_commit_message(repo_path, style, include_body)
         st.code(result, language="markdown")
         record_service_use("Suggest Commit", st.session_state.user_email, st.session_state.session_id)
         render_feedback("Suggest Commit")
-
-elif selected == "Architecture Diagram":
-    st.subheader("Architecture Diagram")
-    source_type, source_value = render_source_selector("arch", allow_file_path=False)
-    diagram_mode = st.selectbox(
-        "Diagram detail",
-        ["Overview (recommended)", "Detailed (key internal folders)"],
-        index=0,
-    )
-    max_dirs = st.slider("Max top-level modules", min_value=5, max_value=40, value=20, step=5)
-
-    if st.button("Generate Diagram", type="primary"):
-        result = ""
-        mode_value = "detailed" if diagram_mode.startswith("Detailed") else "overview"
-        if source_type == "local":
-            result = generate_architecture_diagram(
-                source_value or ".",
-                max_dirs=max_dirs,
-                mode=mode_value,
-            )
-        else:
-            valid, err = validate_github_url(source_value)
-            if not valid:
-                result = err
-            else:
-                try:
-                    with clone_temp_repo(source_value) as repo_path:
-                        result = generate_architecture_diagram(
-                            str(repo_path),
-                            max_dirs=max_dirs,
-                            mode=mode_value,
-                        )
-                except (RuntimeError, ValueError, TimeoutError) as ex:
-                    result = str(ex)
-
-        st.code(result, language="markdown")
-        record_service_use("Architecture Diagram", st.session_state.user_email, st.session_state.session_id)
-        render_feedback("Architecture Diagram")
 
 elif selected == "Stats":
     st.subheader("Stats")
