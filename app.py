@@ -421,66 +421,36 @@ elif selected == "Repository Overview":
                         include_diagram=include_diagram,
                     )
             else:
-
-    if not source_value:
-
-        st.error("Please enter a GitHub URL.")
-
-    else:
-
-        valid, err = validate_github_url(source_value)
-
-        if not valid:
-
-            st.error(err)
-
-        else:
-
-            try:
-
-                cached = get_cached_repo(source_value)
-
-                if cached.found and cached.overview:
-
-                    st.success("Loaded from cache.")
-
-                    result = cached.overview
-
+                if not source_value:
+                    st.error("Please enter a GitHub URL.")
                 else:
-
-                    with clone_temp_repo(source_value) as repo_path:
-
-                        result = generate_repository_overview(
-
-                            str(repo_path),
-
-                            audience=audience,
-
-                            language=language,
-
-                            include_diagram=include_diagram,
-
-                        )
-
-                        save_repo_cache(
-
-                            repo_url=source_value,
-
-                            repo_name=repo_path.name,
-
-                            overview=result,
-
-                            frameworks=[],
-
-                            architecture="Detected",
-
-                            last_commit=None,
-
-                        )
-
-            except (RuntimeError, ValueError, TimeoutError) as ex:
-
-                st.error(str(ex))
+                    valid, err = validate_github_url(source_value)
+                    if not valid:
+                        st.error(err)
+                    else:
+                        try:
+                            cached = get_cached_repo(source_value)
+                            if cached.found and cached.overview:
+                                st.success("Loaded from cache.")
+                                result = cached.overview
+                            else:
+                                with clone_temp_repo(source_value) as repo_path:
+                                    result = generate_repository_overview(
+                                        str(repo_path),
+                                        audience=audience,
+                                        language=language,
+                                        include_diagram=include_diagram,
+                                    )
+                                    save_repo_cache(
+                                        repo_url=source_value,
+                                        repo_name=repo_path.name,
+                                        overview=result,
+                                        frameworks=[],
+                                        architecture="Detected",
+                                        last_commit=None,
+                                    )
+                        except (RuntimeError, ValueError, TimeoutError) as ex:
+                            st.error(str(ex))
         if result:
             st.success("Repository guide ready.")
             st.markdown(result)
