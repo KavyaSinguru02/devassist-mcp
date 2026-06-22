@@ -1,205 +1,152 @@
-"""
-Tool: Generate unit tests for a code file using a specific framework.
+from __future__ import annotations
 
-Reads a code file and returns a prompt for claude to generate runnable unit tests covering happy paths and edge case in the requested framework.
-"""
 from pathlib import Path
 
-#Supported testing framework with their typical conventions
 SUPPORTED_FRAMEWORKS = {
-    "pytest":{
-        "language":"Python",
-        "naming": "test_<module>.py with test_<function> functions",
-        "style": "pytest fixtures,parameterize for multiple cases",
-    },
-    "unittest":{
-        "language":"Python",
-        "naming": "test_<module>.py with Test<Module> class and test_<function> methods",
-        "style": "setUp/tearDown for fixtures, subTest for multiple cases",
-    },
-    "jest":{
-        "language":"JavaScript/TypeScript",
-        "naming": "<module>.test.js/ts with describe and it blocks",
-        "style": "beforeEach/afterEach for setup, describe.each for multiple cases",
-    },
-    "mocha":{
-        "language":"JavaScript/TypeScript",
-        "naming": "<module>.test.js/ts with describe and it blocks",
-        "style": "beforeEach/afterEach for setup, describe.each for multiple cases",
-    },
-    "junit":{
-        "language":"Java",
-        "naming": "<Module>Test.java with @Test annotated methods",
-        "style": "@Before/@After for setup, parameterized tests for multiple cases",
-    },
-    "go test":{
-        "language":"Go",
-        "naming": "<module>_test.go with Test<Function> functions",
-        "style": "table driven tests for multiple cases, setup in test function or TestMain",
-    },
-    "rspec":{
-            "language":"Ruby",
-            "naming": "<module>_spec.rb with describe and it blocks",
-            "style": "before(:each)/after(:each) for setup, shared_examples for multiple cases",
-        },
-    "phpunit":{
-        "language":"PHP",
-        "naming": "<Module>Test.php with test<Function> methods",
-        "style": "setUp/tearDown for fixtures, data providers for multiple cases",
-    },
+    "pytest": {"language": "Python", "naming": "test_<module>.py", "style": "pytest fixtures and parameterize"},
+    "unittest": {"language": "Python", "naming": "test_<module>.py", "style": "TestCase classes"},
+    "jest": {"language": "JavaScript/TypeScript", "naming": "<module>.test.js/ts", "style": "describe/it blocks"},
+    "vitest": {"language": "JavaScript/TypeScript", "naming": "<module>.test.ts", "style": "describe/it with expect"},
+    "mocha": {"language": "JavaScript/TypeScript", "naming": "<module>.test.js", "style": "describe/it blocks"},
+    "junit": {"language": "Java", "naming": "<Module>Test.java", "style": "@Test methods"},
+    "testng": {"language": "Java", "naming": "<Module>Test.java", "style": "@Test methods"},
+    "go test": {"language": "Go", "naming": "<module>_test.go", "style": "table-driven tests"},
+    "rspec": {"language": "Ruby", "naming": "<module>_spec.rb", "style": "describe/context/it"},
+    "phpunit": {"language": "PHP", "naming": "<Module>Test.php", "style": "PHPUnit TestCase"},
+    "xunit": {"language": "C#/.NET", "naming": "<Module>Tests.cs", "style": "Fact/Theory tests"},
+    "nunit": {"language": "C#/.NET", "naming": "<Module>Tests.cs", "style": "Test attributes"},
+    "swift testing": {"language": "Swift", "naming": "<Module>Tests.swift", "style": "Swift Testing/XCTest"},
+    "flutter test": {"language": "Dart/Flutter", "naming": "<module>_test.dart", "style": "testWidgets/test"},
 }
 
-# Supported explanation languages for test comments and documentation
-SUPPORTED_LANGUAGES = {
-    "English": "en",
-    "Hindi": "hi",
-    "Telugu": "te",
-    "Tamil": "ta",
-    "Spanish": "es",
-    "French": "fr",
-    "German": "de",
-    "Mandarin": "zh",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Arabic": "ar",
-    "Portuguese": "pt",
-    "Russian": "ru",
-    "Italian": "it",
+SUPPORTED_LANGUAGES = [
+    "English", "Telugu", "Hindi", "Tamil", "Spanish", "French", "German", "Polish",
+    "Mandarin", "Japanese", "Korean", "Arabic", "Portuguese", "Russian", "Italian",
+]
+
+EXTENSION_LANGUAGE = {
+    ".py": "Python",
+    ".java": "Java",
+    ".js": "JavaScript",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript/React",
+    ".jsx": "JavaScript/React",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".rb": "Ruby",
+    ".php": "PHP",
+    ".cs": "C#",
+    ".swift": "Swift",
+    ".kt": "Kotlin",
+    ".dart": "Dart",
+    ".ex": "Elixir",
+    ".scala": "Scala",
+    ".cpp": "C++",
+    ".c": "C",
 }
+
+
+def _framework_info(framework: str, detected_language: str) -> dict:
+    key = framework.strip().lower()
+    if key in SUPPORTED_FRAMEWORKS:
+        return SUPPORTED_FRAMEWORKS[key]
+    return {
+        "language": detected_language or "Detected language",
+        "naming": "Use the naming convention normally used by this framework/project.",
+        "style": f"Use idiomatic {framework} tests with clear arrange/act/assert structure.",
+    }
+
+
+def _suggested_filename(stem: str, framework: str, suffix: str) -> str:
+    key = framework.strip().lower()
+    if key in {"pytest", "unittest"}:
+        return f"test_{stem}.py"
+    if key in {"jest", "vitest", "mocha"}:
+        return f"{stem}.test.ts"
+    if key in {"junit", "testng"}:
+        return f"{stem}Test.java"
+    if key == "go test":
+        return f"{stem}_test.go"
+    if key == "rspec":
+        return f"{stem}_spec.rb"
+    if key == "phpunit":
+        return f"{stem}Test.php"
+    if key in {"xunit", "nunit"}:
+        return f"{stem}Tests.cs"
+    if key == "flutter test":
+        return f"{stem}_test.dart"
+    return f"{stem}_test{suffix or '.txt'}"
+
 
 def generate_tests(
-        file_path: str, 
-        framework: str="pytest",
-        coverage_level: str="thorough",
-        explanation_language: str="English"
-        ) -> str:
-    """
-    Read a code file and prepare a test-generation prompt for claude.
-
-    Args:
-        file_path (str): The path to the code file for which tests are to be generated.
-        framework (str): The testing framework to use for generating tests. Defaults to "pytest".
-        coverage_level (str): The level of test coverage desired. Options are "basic", "thorough", or "exhaustive". Defaults to "thorough".
-        explanation_language (str): The language for test comments and documentation. Supports 14+ languages. Defaults to "English".
-
-        Returns:
-        Formatted prompt with code + test generation instructions for the specified framework and coverage level.
-    """
-
-    #convert to path object and resolve to absolute path
+    file_path: str,
+    framework: str = "pytest",
+    coverage_level: str = "thorough",
+    explanation_language: str = "English",
+) -> str:
     path = Path(file_path).expanduser().resolve()
 
-    #validate file existence
-    if not path.is_file():
-        return f"The provided path '{file_path}' is not a valid file."
-    
     if not path.exists():
         return f"The provided path '{file_path}' does not exist."
-    
-    #limit file size to 1MB to avoid overwhelming the test generation
-    max_file_size = 1 * 1024 * 1024  # 1MB
-    file_size = path.stat().st_size
+    if not path.is_file():
+        return f"The provided path '{file_path}' is not a valid file."
 
+    max_file_size = 1 * 1024 * 1024
+    file_size = path.stat().st_size
     if file_size > max_file_size:
         return f"The file '{file_path}' is too large ({file_size} bytes). Please provide a file smaller than 1MB for test generation."
-    
-    #validate framework
-    framework=framework.strip().lower()
-    if framework not in SUPPORTED_FRAMEWORKS:
-        supported = ", ".join(SUPPORTED_FRAMEWORKS.keys())
-        return f"Unsupported testing framework '{framework}'. Supported frameworks are: {supported}."
-    
-    #validate coverage level
-    coverage_level=coverage_level.strip().lower()
-    valid_coverage_levels = ["basic", "thorough","exhaustive"]
+
+    coverage_level = coverage_level.strip().lower()
+    valid_coverage_levels = ["basic", "thorough", "exhaustive"]
     if coverage_level not in valid_coverage_levels:
         return f"Invalid coverage level '{coverage_level}'. Valid options are: {', '.join(valid_coverage_levels)}."
-    
-    #validate explanation language
-    explanation_language = explanation_language.strip()
-    if explanation_language not in SUPPORTED_LANGUAGES:
-        supported = ", ".join(SUPPORTED_LANGUAGES.keys())
-        return f"Unsupported language '{explanation_language}'. Supported languages are: {supported}."
-    
-    #read the file
+
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except (UnicodeDecodeError, PermissionError):
-        return f"Could not read the file '{file_path}' due to encoding issues or permission errors."
-    
-    #calculate metadata
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except PermissionError:
+        return f"Could not read the file '{file_path}' due to permission issues."
+
+    detected_language = EXTENSION_LANGUAGE.get(path.suffix.lower(), path.suffix.lstrip(".").upper() or "Unknown")
+    framework_info = _framework_info(framework, detected_language)
+    suggested_test_filename = _suggested_filename(path.stem, framework, path.suffix)
     line_count = len(content.splitlines())
-    code_language = path.suffix.lstrip(".").upper() if path.suffix else "Unknown"
-    framework_info = SUPPORTED_FRAMEWORKS[framework]
 
-    #suggest test filename based on framework conventions
-    stem=path.stem
-    test_filename_map={
-        "pytest": f"test_{stem}.py",
-        "unittest": f"test_{stem}.py",
-        "jest": f"{stem}.test.js",
-        "mocha": f"{stem}.test.js",
-        "junit": f"{stem}Test.java",
-        "go test": f"{stem}_test.go",
-        "rspec": f"{stem}_spec.rb",
-        "phpunit": f"{stem}Test.php",
-
+    coverage_instructions = {
+        "basic": "Generate basic tests covering main happy paths and simple validation cases.",
+        "thorough": "Generate thorough tests covering happy paths, edge cases, validation, and error handling.",
+        "exhaustive": "Generate exhaustive tests covering success, failure, edge cases, boundary values, mocks, and integration-sensitive behavior.",
     }
-    suggested_test_filename = test_filename_map.get(framework, f"test_{stem}.txt")
 
-    #coverage level instructions
-    coverage_instructions_map={
-        "basic": "Generate basic unit tests covering the main functionality and happy paths.Aim for ~60% coverage with 1-2 test per functions ",
-        "thorough": "Generate thorough unit tests covering main functionality, edge cases, and error handling.Aim for ~80% coverage with 2-3 tests per function.",
-        "exhaustive": "Generate exhaustive unit tests covering all possible scenarios, edge cases, and error handling.Aim for 95+% coverage with 3-5 tests per function.",
-    }
-  
-    # Build a concise, copy-paste-friendly prompt for test generation.
-    return f""" Generate unit tests for the following code file using the {framework} framework.
+    return f"""# Test Generation Request
+
+Generate tests for the following code file.
+
 Source File: {path.name}
 Path: {path}
 Size: {file_size:,} bytes | {line_count:,} lines
+Detected Code Language: {detected_language}
+Requested Test Framework: {framework}
+Suggested Test Filename: {suggested_test_filename}
 Coverage Level: {coverage_level}
-code Language: {code_language}
-suggested Test Filename: {suggested_test_filename}
-framework:{framework}({framework_info["language"]}) - {framework_info["naming"]} | {framework_info["style"]}
+Explanation/Comment Language: {explanation_language}
 
+Framework Guidance:
+- Language: {framework_info['language']}
+- Naming: {framework_info['naming']}
+- Style: {framework_info['style']}
 
----SOURCE CODE---
+Coverage Guidance:
+- {coverage_instructions[coverage_level]}
+
+Output requirements:
+1. Return one complete runnable test file first.
+2. Include only the setup/run commands required to execute the tests.
+3. Include a short coverage summary.
+4. Do not generate placeholder-only tests.
+5. If external dependencies exist, mock them clearly.
+6. Follow the conventions of the requested framework even if it is not in the predefined list.
+
+--- SOURCE CODE ---
 {content}
----END OF SOURCE CODE---
-Output requirements (keep it concise and practical):
-- Return one complete runnable test file first.
-- Then include a short coverage summary.
-- Then include only essential setup/run commands.
-
-Guidance:
-- Coverage target: {coverage_instructions_map[coverage_level]}
-- Comment/docstring language: {explanation_language}
-- Naming convention: {framework_info["naming"]}
-- Style convention: {framework_info["style"]}
-
-Do not generate placeholders or TODO-only tests.
+--- END SOURCE CODE ---
 """
-#Test :run this file directly to test it
-if __name__ == "__main__":
-    import sys
-    #Example usage
-    target_file = generate_tests("src/tools/todo_finder.py", framework="pytest", coverage_level="thorough")
-    target_framework = "pytest"
-    target_coverage = "thorough"
-
-    #Accept command line arguments for file path, framework, and coverage level
-    if len(sys.argv) > 1:
-        target_file = sys.argv[1]
-    if len(sys.argv) > 2:
-        target_framework = sys.argv[2]
-    if len(sys.argv) > 3:
-        target_coverage = sys.argv[3]
-    
-    print(f"Testing generate_tests with file: {target_file}, framework: {target_framework}, coverage level: {target_coverage}")
-
-    result = generate_tests(target_file, framework=target_framework, coverage_level=target_coverage)
-    print(result)
-

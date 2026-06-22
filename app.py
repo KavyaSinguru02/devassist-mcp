@@ -314,7 +314,6 @@ st.markdown(
 )
 if selected == "Home":
     st.subheader("Home")
-
     if st.session_state.just_captured_email:
         st.success("Thanks for joining the DevAssist community.")
         st.session_state.just_captured_email = False
@@ -322,12 +321,10 @@ if selected == "Home":
     stats = visitor_stats()
 
     left, right = st.columns([1.35, 1])
-
     with left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### Overview")
         st.write("Dev Assist is built to speed up day-to-day coding tasks for developers.")
-
         st.markdown(
             """
 <div class="tool-grid">
@@ -343,27 +340,7 @@ if selected == "Home":
 """,
             unsafe_allow_html=True,
         )
-
-        st.info("Tip: Start from Repository Overview to understand any project quickly.")
-
-        st.markdown("### Try a Sample Repository")
-        st.write("New here? Pick a sample repository and open Repository Overview.")
-
-        cols = st.columns(len(SAMPLE_REPOSITORIES))
-
-        for i, (name, url) in enumerate(SAMPLE_REPOSITORIES.items()):
-            with cols[i]:
-                if st.button(name, key=f"sample_repo_{i}", use_container_width=True):
-                    st.session_state["github_repo_overview"] = url
-                    st.session_state["sample_repo_hint"] = (
-                        f"Selected sample: {name}. "
-                        "Open Repository Overview and click Teach Me This Repository."
-                    )
-                    st.rerun()
-
-        if st.session_state.get("sample_repo_hint"):
-            st.info(st.session_state["sample_repo_hint"])
-
+        st.info("Tip: Start from Explain Code or Analyze Git Diff for immediate productivity.")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
@@ -387,23 +364,25 @@ if selected == "Home":
     st.write("3. Run the tool and review actionable output.")
     st.write("4. Submit thumbs up/down to improve quality.")
     st.markdown("</div>", unsafe_allow_html=True)
+
 elif selected == "Repository Overview":
     st.subheader("Repository Overview")
     st.caption("Beginner-friendly repository tour with purpose, stack, architecture, important files, and learning path.")
 
-    source_type, source_value = render_source_selector(
-    "repo_overview",
-    allow_file_path=False
-)
+    source_type, source_value = render_source_selector("repo_overview", allow_file_path=False)
+    if st.session_state.get("github_repo_overview"):
+        source_value = st.session_state["github_repo_overview"]
+
     audience = st.selectbox(
         "Explain for",
         ["Beginner", "Non-technical", "Developer", "Architect", "Interview Preparation"],
         index=0,
     )
-    language = st.selectbox(
-        "Language",
-        ["English", "Telugu", "Hindi", "Tamil", "Spanish", "French", "German", "Polish"],
-        index=0,
+    language = st.text_input(
+        "Output language",
+        value="English",
+        placeholder="Example: English, Telugu, Hindi, Polish, German, Spanish",
+        help="DevAssist will use this language for repository guidance when supported. Technical terms are kept readable.",
     )
     include_diagram = st.checkbox("Include Mermaid architecture diagram", value=True)
 
@@ -429,7 +408,12 @@ elif selected == "Repository Overview":
                         st.error(err)
                     else:
                         try:
-                            cached = get_cached_repo(source_value)
+                            cached = get_cached_repo(
+                                source_value,
+                                audience=audience,
+                                language=language,
+                                include_diagram=include_diagram,
+                            )
                             if cached.found and cached.overview:
                                 st.success("Loaded from cache.")
                                 result = cached.overview
@@ -448,9 +432,13 @@ elif selected == "Repository Overview":
                                         frameworks=[],
                                         architecture="Detected",
                                         last_commit=None,
+                                        audience=audience,
+                                        language=language,
+                                        include_diagram=include_diagram,
                                     )
                         except (RuntimeError, ValueError, TimeoutError) as ex:
                             st.error(str(ex))
+
         if result:
             st.success("Repository guide ready.")
             st.markdown(result)
@@ -529,37 +517,37 @@ elif selected == "Explain Code":
 
 elif selected == "Build Code":
     st.subheader("Build Code")
-    st.caption("Describe what you want to build. DevAssist will generate implementation-ready code and placement guidance.")
+    st.caption("Describe what you want to build. DevAssist will generate implementation-ready code and placement guidance for any language/framework.")
 
     requirement = st.text_area(
         "Requirement",
         height=180,
-        placeholder="Example: Add a repository overview page that accepts a GitHub URL, analyzes the stack, and displays a beginner-friendly learning path.",
+        placeholder="Example: Add login API with JWT, validation, service layer, tests, and Swagger docs.",
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        language = st.selectbox(
+        language = st.text_input(
             "Language",
-            ["Python", "Java", "JavaScript", "TypeScript"],
-            index=0,
+            value="Any",
+            placeholder="Example: Python, Java, Go, Rust, C#, Kotlin, PHP, Ruby, Dart",
         )
-        framework = st.selectbox(
+        framework = st.text_input(
             "Framework / Style",
-            ["General", "Streamlit", "FastAPI", "Spring Boot", "React"],
-            index=0,
+            value="Any",
+            placeholder="Example: Spring Boot, FastAPI, React, Django, Laravel, .NET, Flutter",
         )
     with col2:
         audience = st.selectbox(
             "Output style",
-            ["Developer", "Beginner", "Senior Engineer"],
+            ["Developer", "Beginner", "Senior Engineer", "Architect"],
             index=0,
         )
         repo_path = st.text_input("Repository path for context (optional)", value="")
 
     target_file = st.text_input(
         "Target file to update (optional)",
-        placeholder="src/tools/repository_overview.py",
+        placeholder="Example: src/services/user_service.py or app/controllers/UserController.java",
     )
 
     if st.button("Generate Code", type="primary"):
@@ -579,19 +567,34 @@ elif selected == "Build Code":
 
 elif selected == "Generate Tests":
     st.subheader("Generate Tests")
+    st.caption("Generate tests for any language or framework. Use a known framework or type your own.")
+
     source_type, source_value = render_source_selector("tests", allow_file_path=True)
     relative_path = ""
     if source_type == "github":
         relative_path = st.text_input("File path inside repository", placeholder="src/module.py")
 
-    framework = st.selectbox("Framework", list(SUPPORTED_FRAMEWORKS.keys()), index=0)
+    framework = st.text_input(
+        "Testing framework",
+        value="pytest",
+        placeholder="Example: pytest, JUnit, Jest, Vitest, Go test, RSpec, PHPUnit, xUnit, Flutter test",
+    )
     coverage = st.select_slider("Coverage", ["basic", "thorough", "exhaustive"], value="thorough")
+    explanation_language = st.text_input(
+        "Comment/explanation language",
+        value="English",
+        placeholder="Example: English, Telugu, Hindi, Polish",
+    )
 
     if st.button("Generate Tests", type="primary"):
         result = ""
         with st.spinner("Generating tests..."):
             if source_type == "local":
-                result = generate_tests(source_value, framework, coverage) if source_value else "Please provide a file path."
+                result = (
+                    generate_tests(source_value, framework, coverage, explanation_language)
+                    if source_value
+                    else "Please provide a file path."
+                )
             else:
                 if not source_value or not relative_path:
                     result = "Please provide both GitHub URL and file path."
@@ -602,11 +605,16 @@ elif selected == "Generate Tests":
                     else:
                         try:
                             with clone_temp_repo(source_value) as repo_path:
-                                result = generate_tests(str(repo_path / relative_path), framework, coverage)
+                                result = generate_tests(
+                                    str(repo_path / relative_path),
+                                    framework,
+                                    coverage,
+                                    explanation_language,
+                                )
                         except (RuntimeError, ValueError, TimeoutError) as ex:
                             result = str(ex)
 
-        if result.startswith("Please") or result.startswith("Unsupported") or result.startswith("Invalid"):
+        if result.startswith("Please") or result.startswith("Invalid"):
             st.error(result)
         else:
             st.success("Test prompt generated.")
