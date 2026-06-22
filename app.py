@@ -1,21 +1,17 @@
-"""DevAssist Streamlit app with email gate, sidebar tools, and feedback tracking."""
+"""DevAssist production Streamlit app: open access, optional email capture, privacy-safe analytics, and developer tools."""
 
 from __future__ import annotations
 
-import json
-import smtplib
 import sys
-from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import streamlit as st
-import dns.resolver
-from email_validator import EmailNotValidError, validate_email
+from dotenv import load_dotenv
 
 # Add src to path so we can import tools directly.
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+load_dotenv()
 
 from tools.code_explainer import explain_code, explain_repo
 from tools.commit_helper import suggest_commit_message
@@ -24,6 +20,26 @@ from tools.git_analyzer import analyze_git_diff
 from tools.test_generator import SUPPORTED_FRAMEWORKS, generate_tests
 from tools.todo_finder import find_todos
 from utils.repo_cloner import POPULAR_REPOS, clone_temp_repo, get_repo_info, validate_github_url
+from utils.supabase_visitors import save_visitor_email
+from utils.supabase_tracking import (
+    get_feedback_summary,
+    get_tool_usage_stats,
+    get_visitor_stats,
+    record_tool_usage,
+    save_tool_feedback,
+)
+from tools.repository_overview import generate_repository_overview
+from tools.code_builder import build_code_from_requirement
+from utils.repository_cache import get_cached_repo, save_repo_cache
+from tools.repository_chat import chat_with_repository
+
+
+SAMPLE_REPOSITORIES = {
+    "DevAssist": "https://github.com/KavyaSinguru02/devassist-mcp",
+    "Spring PetClinic": "https://github.com/spring-projects/spring-petclinic",
+    "FastAPI": "https://github.com/fastapi/fastapi",
+    "React": "https://github.com/facebook/react",
+} 
 
 st.set_page_config(
     page_title="DevAssist",
@@ -122,248 +138,34 @@ st.markdown(
 )
 
 
-# -------------------------
-# JSON storage helpers
-# -------------------------
-def _json_path(name: str) -> Path:
-    return Path(__file__).parent / name
-
-
-def _load_json(name: str, default: dict) -> dict:
-    path = _json_path(name)
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
-
-def _save_json(name: str, data: dict) -> None:
-    path = _json_path(name)
-    try:
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-DISPOSABLE_EMAIL_DOMAINS = {
-    "mailinator.com",
-    "10minutemail.com",
-    "guerrillamail.com",
-    "temp-mail.org",
-    "yopmail.com",
-    "sharklasers.com",
-    "dispostable.com",
-    "throwawaymail.com",
-}
-
-ROLE_LOCALPARTS = {
-    "admin",
-    "support",
-    "help",
-    "info",
-    "contact",
-    "noreply",
-    "no-reply",
-    "test",
-    "testing",
-    "demo",
-}
-
-# Major providers often block RCPT probing, making mailbox checks indeterminate.
-SMTP_INDETERMINATE_OK_DOMAINS = {
-    "gmail.com",
-    "googlemail.com",
-    "outlook.com",
-    "hotmail.com",
-    "live.com",
-    "yahoo.com",
-    "icloud.com",
-    "me.com",
-    "aol.com",
-}
-
-SMTP_TIMEOUT_SECONDS = 3
-
-
-@lru_cache(maxsize=512)
-def _mx_records(domain: str) -> list[str]:
-    try:
-        answers = dns.resolver.resolve(domain, "MX")
-    except Exception:
-        return []
-    records: list[tuple[int, str]] = []
-    for r in answers:
-        try:
-            records.append((int(r.preference), str(r.exchange).rstrip(".")))
-        except Exception:
-            continue
-    records.sort(key=lambda x: x[0])
-    return [host for _, host in records]
-
-
-def _smtp_mailbox_probe(email: str, mx_hosts: list[str]) -> tuple[Optional[bool], str]:
-    """Try RCPT TO probe. Returns True/False/None (indeterminate)."""
-    for host in mx_hosts[:2]:
-        try:
-            with smtplib.SMTP(host, 25, timeout=SMTP_TIMEOUT_SECONDS) as smtp:
-                smtp.ehlo_or_helo_if_needed()
-                smtp.mail("<>")
-                code, msg = smtp.rcpt(email)
-                text = (msg.decode(errors="ignore") if isinstance(msg, bytes) else str(msg)).strip()
-                if code in (250, 251):
-                    return True, f"Mailbox accepted by {host}"
-                if code in (550, 551, 553):
-                    return False, f"Mailbox rejected by {host}: {text}"
-                return None, f"Mailbox could not be verified via {host}: {code} {text}"
-        except Exception:
-            continue
-    return None, "Mailbox verification server did not allow probe"
-
-
-def validate_real_email(raw_email: str) -> tuple[bool, str]:
-    """Validate email syntax, domain quality, and mailbox plausibility."""
-    try:
-        validated = validate_email(raw_email, check_deliverability=True)
-        normalized = validated.normalized
-        local, _, domain = normalized.partition("@")
-        local_l = local.lower()
-        domain_l = domain.lower()
-
-        if domain_l in DISPOSABLE_EMAIL_DOMAINS:
-            return False, "Disposable email domains are not allowed."
-
-        if local_l in ROLE_LOCALPARTS:
-            return False, "Role-based email addresses are not allowed. Use your personal mailbox."
-
-        mx_hosts = _mx_records(domain_l)
-        if not mx_hosts:
-            return False, "Domain has no reachable MX records."
-
-        # Strict mode: accept only when mailbox probe is explicitly accepted.
-        probe_ok, probe_msg = _smtp_mailbox_probe(normalized, mx_hosts)
-        if probe_ok is False:
-            return False, f"Mailbox could not be validated: {probe_msg}"
-        if probe_ok is None:
-            if domain_l in SMTP_INDETERMINATE_OK_DOMAINS:
-                return True, normalized
-            return False, f"Mailbox could not be verified: {probe_msg}"
-
-        return True, normalized
-    except EmailNotValidError as exc:
-        return False, str(exc)
-
-
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_repo_info(url: str) -> dict:
     return get_repo_info(url)
 
 
+
 # -------------------------
 # Visitor and analytics
 # -------------------------
-def add_or_update_visitor(email: str, session_id: str) -> tuple[bool, str]:
-    data = _load_json(".visitors.json", {"created_on": datetime.now().isoformat(), "visitors": []})
-    visitors = data.get("visitors", [])
-
-    now = datetime.now().isoformat()
-    for visitor in visitors:
-        if visitor.get("email", "").lower() == email.lower():
-            visitor["last_seen"] = now
-            visitor["visits"] = int(visitor.get("visits", 1)) + 1
-            visitor["session_id"] = session_id
-            _save_json(".visitors.json", data)
-            return False, "existing"
-
-    visitors.append(
-        {
-            "email": email,
-            "session_id": session_id,
-            "first_seen": now,
-            "last_seen": now,
-            "visits": 1,
-        }
-    )
-    data["visitors"] = visitors
-    _save_json(".visitors.json", data)
-    return True, "new"
-
-
 def visitor_stats() -> dict:
-    data = _load_json(".visitors.json", {"created_on": datetime.now().isoformat(), "visitors": []})
-    visitors = data.get("visitors", [])
-    total_visits = sum(int(v.get("visits", 1)) for v in visitors)
-    created_on = data.get("created_on", datetime.now().isoformat())
-    return {
-        "created_on": created_on,
-        "unique_visitors": len(visitors),
-        "total_visits": total_visits,
-        "recent": visitors[-10:],
-    }
-
-
-def record_service_use(tool_name: str, email: str, session_id: str) -> None:
-    data = _load_json(".analytics.json", {"service_usage": {}, "page_views": []})
-    data.setdefault("service_usage", {})
-    data["service_usage"][tool_name] = int(data["service_usage"].get(tool_name, 0)) + 1
-    data.setdefault("page_views", []).append(
-        {
-            "tool": tool_name,
-            "email": email,
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-        }
-    )
-    _save_json(".analytics.json", data)
-
-
-def get_usage_stats() -> dict:
-    return _load_json(".analytics.json", {"service_usage": {}, "page_views": []})
-
-
-def save_feedback(tool_name: str, vote: str, email: str, session_id: str) -> None:
-    data = _load_json(".feedback.json", {"feedback": []})
-    data.setdefault("feedback", []).append(
-        {
-            "tool": tool_name,
-            "vote": vote,
-            "email": email,
-            "session_id": session_id,
-            "timestamp": datetime.now().isoformat(),
-        }
-    )
-    _save_json(".feedback.json", data)
-
-
-def get_feedback_stats() -> dict:
-    data = _load_json(".feedback.json", {"feedback": []})
-    counts = {}
-    for item in data.get("feedback", []):
-        tool = item.get("tool", "Unknown")
-        vote = item.get("vote", "down")
-        counts.setdefault(tool, {"up": 0, "down": 0})
-        if vote == "up":
-            counts[tool]["up"] += 1
-        else:
-            counts[tool]["down"] += 1
-    return counts
+    return get_visitor_stats()
 
 
 def render_feedback(tool_name: str) -> None:
     st.write("Was this result useful?")
     col1, col2 = st.columns(2)
+
     with col1:
         if st.button("Thumbs Up", key=f"up_{tool_name}"):
-            save_feedback(tool_name, "up", st.session_state.user_email, st.session_state.session_id)
-            stats = get_feedback_stats().get(tool_name, {"up": 0, "down": 0})
-            st.success(f"Saved instantly. Up: {stats['up']} | Down: {stats['down']}")
+            save_tool_feedback(tool_name, "up")
+            stats = get_feedback_summary().get(tool_name, {"up": 0, "down": 0})
+            st.success(f"Saved. Up: {stats['up']} | Down: {stats['down']}")
+
     with col2:
         if st.button("Thumbs Down", key=f"down_{tool_name}"):
-            save_feedback(tool_name, "down", st.session_state.user_email, st.session_state.session_id)
-            stats = get_feedback_stats().get(tool_name, {"up": 0, "down": 0})
-            st.success(f"Saved instantly. Up: {stats['up']} | Down: {stats['down']}")
-
+            save_tool_feedback(tool_name, "down")
+            stats = get_feedback_summary().get(tool_name, {"up": 0, "down": 0})
+            st.success(f"Saved. Up: {stats['up']} | Down: {stats['down']}")
 
 # -------------------------
 # Shared UI helpers
@@ -434,61 +236,68 @@ def render_branding_bottom() -> None:
 # -------------------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(datetime.now().timestamp())
-if "subscribed" not in st.session_state:
-    st.session_state.subscribed = False
 if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
-if "just_subscribed" not in st.session_state:
-    st.session_state.just_subscribed = False
+    st.session_state.user_email = "anonymous"
+if "email_captured" not in st.session_state:
+    st.session_state.email_captured = False
+if "just_captured_email" not in st.session_state:
+    st.session_state.just_captured_email = False
 
 
-# -------------------------
-# Page 1: Email gate
-# -------------------------
-if not st.session_state.subscribed:
-    st.title("Dev Assist")
-    st.markdown('<p class="small-subtitle">Join with your email to continue.</p>', unsafe_allow_html=True)
+def render_optional_email_capture(location: str = "home") -> None:
+    """Collect email without blocking access to tools.
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.subheader("Join Our Community")
-    with st.form("email_form", clear_on_submit=False):
-        email = st.text_input("Email", placeholder="your.email@example.com")
-        submit = st.form_submit_button("Subscribe")
+    This is intentionally optional for production UX. Users can use DevAssist
+    without creating an account or waiting for OTP/magic links.
+    """
+    if st.session_state.email_captured:
+        st.success("Thanks for joining the DevAssist community.")
+        return
 
-    if submit:
-        is_valid_email, email_result = validate_real_email(email.strip())
-        if not is_valid_email:
-            st.error("Enter valid email address.")
-            st.caption(email_result)
-        else:
-            _, state = add_or_update_visitor(email_result, st.session_state.session_id)
-            st.session_state.user_email = email_result
-            st.session_state.subscribed = True
-            st.session_state.just_subscribed = True
-            if state == "new":
-                st.success("Thank you for joining our community.")
+    with st.form(f"optional_email_capture_{location}", clear_on_submit=False):
+        email = st.text_input(
+            "Optional email",
+            placeholder="your.email@example.com",
+            help="Optional. We only use this to understand interest and improve DevAssist. Tools work without it.",
+        )
+        submitted = st.form_submit_button("Join community")
+
+    if submitted:
+        if not email.strip():
+            st.info("Email is optional. You can continue using DevAssist without joining.")
+            return
+        try:
+            result = save_visitor_email(email, st.session_state.session_id)
+            if result.success:
+                st.session_state.user_email = result.email or "anonymous"
+                st.session_state.email_captured = True
+                st.session_state.just_captured_email = True
+                st.success("Thanks! You can continue using DevAssist.")
+                st.rerun()
             else:
-                st.success("Welcome back. Your email is already registered.")
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.stop()
-
+                st.error("Please enter a valid email address.")
+                st.caption(result.message)
+        except Exception as exc:
+            st.warning("DevAssist is still available. We could not save the email right now.")
+            st.caption(str(exc))
 
 # -------------------------
 # Page 2: Main app
 # -------------------------
 st.sidebar.title("Tools")
-st.sidebar.caption(f"Signed in as: {st.session_state.user_email}")
+st.sidebar.caption("Open access • No subscription required")
 
 pages = [
     "Home",
+    "Repository Overview",
     "Explain Code",
+    "Build Code",
     "Generate Tests",
     "Analyze Git Diff",
     "Diagnose Error",
     "Find TODOs",
     "Suggest Commit",
+    "Repository Chat",
     "Stats",
 ]
 
@@ -498,28 +307,33 @@ st.markdown(
     """
 <div class="hero">
     <p class="hero-title">Dev Assist Workspace</p>
-    <p class="hero-sub">Practical developer tools for code understanding, test generation, git review, TODO detection, commit quality, and architecture visualization.</p>
+    <p class="hero-sub">Open developer tools for repository understanding, code explanation, testing, debugging, git review, and architecture visualization.</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 if selected == "Home":
     st.subheader("Home")
-    if st.session_state.just_subscribed:
-        st.success("Thank you for subscribing.")
-        st.session_state.just_subscribed = False
+
+    if st.session_state.just_captured_email:
+        st.success("Thanks for joining the DevAssist community.")
+        st.session_state.just_captured_email = False
 
     stats = visitor_stats()
 
     left, right = st.columns([1.35, 1])
+
     with left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("### Overview")
         st.write("Dev Assist is built to speed up day-to-day coding tasks for developers.")
+
         st.markdown(
             """
 <div class="tool-grid">
+    <div class="tool-item"><b>Repository Overview</b><br/>Beginner-friendly project purpose, stack, architecture, and learning path.</div>
     <div class="tool-item"><b>Explain Code</b><br/>Line-by-line explanation in your language.</div>
+    <div class="tool-item"><b>Build Code</b><br/>Turn requirements into implementation-ready code.</div>
     <div class="tool-item"><b>Generate Tests</b><br/>Framework-specific test prompt with coverage options.</div>
     <div class="tool-item"><b>Analyze Git Diff</b><br/>Review uncommitted changes by focus area.</div>
     <div class="tool-item"><b>Diagnose Error</b><br/>Paste traceback and get root cause + where to check.</div>
@@ -529,16 +343,41 @@ if selected == "Home":
 """,
             unsafe_allow_html=True,
         )
-        st.info("Tip: Start from Explain Code or Analyze Git Diff for immediate productivity.")
+
+        st.info("Tip: Start from Repository Overview to understand any project quickly.")
+
+        st.markdown("### Try a Sample Repository")
+        st.write("New here? Pick a sample repository and open Repository Overview.")
+
+        cols = st.columns(len(SAMPLE_REPOSITORIES))
+
+        for i, (name, url) in enumerate(SAMPLE_REPOSITORIES.items()):
+            with cols[i]:
+                if st.button(name, key=f"sample_repo_{i}", use_container_width=True):
+                    st.session_state["github_repo_overview"] = url
+                    st.session_state["sample_repo_hint"] = (
+                        f"Selected sample: {name}. "
+                        "Open Repository Overview and click Teach Me This Repository."
+                    )
+                    st.rerun()
+
+        if st.session_state.get("sample_repo_hint"):
+            st.info(st.session_state["sample_repo_hint"])
+
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### Account & Usage")
-        st.write(f"Email: {st.session_state.user_email}")
-        st.write(f"Unique visitors: {stats['unique_visitors']}")
-        st.write(f"Total visits: {stats['total_visits']}")
-        st.write("Feedback is collected instantly after each tool result.")
+        st.markdown("### Usage")
+        st.write("DevAssist is open access. No subscription is required.")
+        st.write(f"Community members: {stats['unique_visitors']}")
+        st.write(f"Total tool sessions: {stats['total_visits']}")
+        st.write("Feedback is collected without showing personal emails in the UI.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### Join Community (Optional)")
+        render_optional_email_capture("home")
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -548,6 +387,105 @@ if selected == "Home":
     st.write("3. Run the tool and review actionable output.")
     st.write("4. Submit thumbs up/down to improve quality.")
     st.markdown("</div>", unsafe_allow_html=True)
+elif selected == "Repository Overview":
+    st.subheader("Repository Overview")
+    st.caption("Beginner-friendly repository tour with purpose, stack, architecture, important files, and learning path.")
+
+    source_type, source_value = render_source_selector(
+    "repo_overview",
+    allow_file_path=False
+)
+    audience = st.selectbox(
+        "Explain for",
+        ["Beginner", "Non-technical", "Developer", "Architect", "Interview Preparation"],
+        index=0,
+    )
+    language = st.selectbox(
+        "Language",
+        ["English", "Telugu", "Hindi", "Tamil", "Spanish", "French", "German", "Polish"],
+        index=0,
+    )
+    include_diagram = st.checkbox("Include Mermaid architecture diagram", value=True)
+
+    if st.button("Teach Me This Repository", type="primary"):
+        result = ""
+        with st.spinner("Building beginner-friendly repository overview..."):
+            if source_type == "local":
+                if not source_value:
+                    st.error("Please provide a local repository path.")
+                else:
+                    result = generate_repository_overview(
+                        source_value,
+                        audience=audience,
+                        language=language,
+                        include_diagram=include_diagram,
+                    )
+            else:
+
+    if not source_value:
+
+        st.error("Please enter a GitHub URL.")
+
+    else:
+
+        valid, err = validate_github_url(source_value)
+
+        if not valid:
+
+            st.error(err)
+
+        else:
+
+            try:
+
+                cached = get_cached_repo(source_value)
+
+                if cached.found and cached.overview:
+
+                    st.success("Loaded from cache.")
+
+                    result = cached.overview
+
+                else:
+
+                    with clone_temp_repo(source_value) as repo_path:
+
+                        result = generate_repository_overview(
+
+                            str(repo_path),
+
+                            audience=audience,
+
+                            language=language,
+
+                            include_diagram=include_diagram,
+
+                        )
+
+                        save_repo_cache(
+
+                            repo_url=source_value,
+
+                            repo_name=repo_path.name,
+
+                            overview=result,
+
+                            frameworks=[],
+
+                            architecture="Detected",
+
+                            last_commit=None,
+
+                        )
+
+            except (RuntimeError, ValueError, TimeoutError) as ex:
+
+                st.error(str(ex))
+        if result:
+            st.success("Repository guide ready.")
+            st.markdown(result)
+            record_tool_usage("Repository Overview")
+            render_feedback("Repository Overview")
 
 elif selected == "Explain Code":
     st.subheader("Explain Code")
@@ -615,8 +553,59 @@ elif selected == "Explain Code":
         if result:
             st.success("Explanation generated.")
             st.code(result, language="markdown")
-            record_service_use("Explain Code", st.session_state.user_email, st.session_state.session_id)
+            record_tool_usage("Explain Code")
             render_feedback("Explain Code")
+
+
+elif selected == "Build Code":
+    st.subheader("Build Code")
+    st.caption("Describe what you want to build. DevAssist will generate implementation-ready code and placement guidance.")
+
+    requirement = st.text_area(
+        "Requirement",
+        height=180,
+        placeholder="Example: Add a repository overview page that accepts a GitHub URL, analyzes the stack, and displays a beginner-friendly learning path.",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        language = st.selectbox(
+            "Language",
+            ["Python", "Java", "JavaScript", "TypeScript"],
+            index=0,
+        )
+        framework = st.selectbox(
+            "Framework / Style",
+            ["General", "Streamlit", "FastAPI", "Spring Boot", "React"],
+            index=0,
+        )
+    with col2:
+        audience = st.selectbox(
+            "Output style",
+            ["Developer", "Beginner", "Senior Engineer"],
+            index=0,
+        )
+        repo_path = st.text_input("Repository path for context (optional)", value="")
+
+    target_file = st.text_input(
+        "Target file to update (optional)",
+        placeholder="src/tools/repository_overview.py",
+    )
+
+    if st.button("Generate Code", type="primary"):
+        with st.spinner("Generating implementation-ready code..."):
+            result = build_code_from_requirement(
+                requirement=requirement,
+                language=language,
+                framework=framework,
+                target_file=target_file,
+                repo_path=repo_path,
+                audience=audience,
+            )
+        st.success("Code draft ready.")
+        st.markdown(result)
+        record_tool_usage("Build Code")
+        render_feedback("Build Code")
 
 elif selected == "Generate Tests":
     st.subheader("Generate Tests")
@@ -652,7 +641,7 @@ elif selected == "Generate Tests":
         else:
             st.success("Test prompt generated.")
             st.code(result, language="markdown")
-            record_service_use("Generate Tests", st.session_state.user_email, st.session_state.session_id)
+            record_tool_usage("Generate Tests")
             render_feedback("Generate Tests")
 
 elif selected == "Analyze Git Diff":
@@ -664,7 +653,7 @@ elif selected == "Analyze Git Diff":
         with st.spinner("Reviewing changes..."):
             result = analyze_git_diff(repo_path, focus)
         st.code(result, language="markdown")
-        record_service_use("Analyze Git Diff", st.session_state.user_email, st.session_state.session_id)
+        record_tool_usage("Analyze Git Diff")
         render_feedback("Analyze Git Diff")
 
 elif selected == "Diagnose Error":
@@ -686,7 +675,7 @@ elif selected == "Diagnose Error":
                 result = diagnose_error(error_text=error_text, repo_path=repo_path or ".")
             st.success("Diagnosis ready.")
             st.code(result, language="markdown")
-            record_service_use("Diagnose Error", st.session_state.user_email, st.session_state.session_id)
+            record_tool_usage("Diagnose Error")
             render_feedback("Diagnose Error")
 
 elif selected == "Find TODOs":
@@ -717,7 +706,7 @@ elif selected == "Find TODOs":
                         except (RuntimeError, ValueError, TimeoutError) as ex:
                             result = str(ex)
             st.code(result, language="markdown")
-            record_service_use("Find TODOs", st.session_state.user_email, st.session_state.session_id)
+            record_tool_usage("Find TODOs")
             render_feedback("Find TODOs")
 
 elif selected == "Suggest Commit":
@@ -730,14 +719,82 @@ elif selected == "Suggest Commit":
         with st.spinner("Preparing commit suggestions..."):
             result = suggest_commit_message(repo_path, style, include_body)
         st.code(result, language="markdown")
-        record_service_use("Suggest Commit", st.session_state.user_email, st.session_state.session_id)
+        record_tool_usage("Suggest Commit")
         render_feedback("Suggest Commit")
+elif selected == "Repository Chat":
+    st.subheader("Repository Chat")
+    st.caption("Ask questions about a repository, such as where authentication happens or what file starts the app.")
+
+    source_type, source_value = render_source_selector("repo_chat", allow_file_path=False)
+
+    question = st.text_area(
+        "Question",
+        height=120,
+        placeholder="Example: Which file starts the application? Where is authentication implemented?",
+    )
+
+    audience = st.selectbox(
+        "Explain for",
+        ["Beginner", "Developer", "Architect", "Interview Preparation"],
+        index=0,
+        key="repo_chat_audience",
+    )
+
+    language = st.selectbox(
+        "Language",
+        ["English", "Telugu", "Hindi", "Tamil", "Spanish", "French", "German", "Polish"],
+        index=0,
+        key="repo_chat_language",
+    )
+
+    if st.button("Ask Repository", type="primary"):
+        result = ""
+
+        if source_type == "local":
+            if not source_value:
+                st.error("Please provide a local repository path.")
+            else:
+                with st.spinner("Reading repository and searching relevant files..."):
+                    result = chat_with_repository(
+                        source_value,
+                        question,
+                        audience=audience,
+                        language=language,
+                    )
+
+        else:
+            if not source_value:
+                st.error("Please enter a GitHub URL.")
+            else:
+                valid, err = validate_github_url(source_value)
+
+                if not valid:
+                    st.error(err)
+                else:
+                    try:
+                        with st.spinner("Cloning repository and searching relevant files..."):
+                            with clone_temp_repo(source_value) as repo_path:
+                                result = chat_with_repository(
+                                    str(repo_path),
+                                    question,
+                                    audience=audience,
+                                    language=language,
+                                )
+                    except (RuntimeError, ValueError, TimeoutError) as ex:
+                        st.error(str(ex))
+
+        if result:
+            st.success("Repository answer ready.")
+            st.markdown(result)
+            record_tool_usage("Repository Chat")
+            render_feedback("Repository Chat")
 
 elif selected == "Stats":
     st.subheader("Stats")
+    st.caption("Privacy-safe metrics only. Individual emails and sessions are not displayed.")
     vstats = visitor_stats()
-    usage = get_usage_stats()
-    feedback = get_feedback_stats()
+    usage = get_tool_usage_stats()
+    feedback = get_feedback_summary()
 
     file_created = datetime.fromtimestamp(Path(__file__).stat().st_ctime).strftime("%Y-%m-%d")
 
@@ -747,13 +804,11 @@ elif selected == "Stats":
     c3.metric("Page Created On", file_created)
 
     st.write("Service usage")
-    st.json(usage.get("service_usage", {}))
+    st.json(usage)
 
     st.write("Feedback summary")
     st.json(feedback)
 
-    st.write("Recent emails")
-    for item in vstats["recent"]:
-        st.write(f"- {item.get('email', '')} | first seen: {item.get('first_seen', '')}")
+    st.info("Privacy note: individual email addresses are never displayed in the Stats page.")
 
 render_branding_bottom()
